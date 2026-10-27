@@ -7,8 +7,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def _strip_inline_comment(value: str) -> str:
+    """Drop a trailing `# comment` unless the value is quoted."""
+    v = value.strip()
+    if v[:1] in {'"', "'"} and v.count(v[0]) >= 2:
+        return v[1:v.index(v[0], 1)]
+    for i, ch in enumerate(v):
+        if ch == "#" and (i == 0 or v[i - 1].isspace()):
+            return v[:i].strip()
+    return v
+
+
 def load_dotenv(path: str | os.PathLike = ".env") -> None:
-    """Minimal .env loader: KEY=VALUE lines, '#' comments, no overrides of existing env."""
+    """Minimal .env loader: KEY=VALUE lines, full-line and inline '#' comments, optional quotes,
+    optional `export ` prefix. Existing environment variables are never overridden."""
     p = Path(path)
     if not p.is_file():
         return
@@ -16,9 +28,13 @@ def load_dotenv(path: str | os.PathLike = ".env") -> None:
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
+        if line.startswith("export "):
+            line = line[len("export "):]
         key, _, value = line.partition("=")
-        key, value = key.strip(), value.strip().strip('"').strip("'")
-        os.environ.setdefault(key, value)
+        key = key.strip()
+        if not key:
+            continue
+        os.environ.setdefault(key, _strip_inline_comment(value))
 
 
 def _env(name: str, default: str) -> str:
