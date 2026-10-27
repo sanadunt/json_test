@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Trading Dashboard</title>
+<script src="https://unpkg.com/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --text:#e6e8ee; --muted:#8b93a7;
+          --up:#26a69a; --down:#ef5350; --accent:#2962ff; --warn:#ffb74d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:8px 20px; align-items:baseline; padding:14px 20px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:18px; margin:0; font-weight:600; }
+  header .muted { color:var(--muted); }
+  main { padding:16px 20px; display:grid; gap:16px; grid-template-columns: 1fr; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+  .tile { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .tile .k { color:var(--muted); font-size:12px; }
+  .tile .v { font-size:20px; font-weight:600; margin-top:2px; font-variant-numeric:tabular-nums; }
+  .pos { color:var(--up); } .neg { color:var(--down); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; }
+  .panel h2 { font-size:13px; color:var(--muted); margin:0 0 8px 4px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  #price { height:420px; } #equity { height:180px; }
+  .banner { background:#3b1d1d; border:1px solid var(--down); color:#ffb4b4; padding:8px 12px; border-radius:8px; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:500; font-size:12px; }
+  td.r, th.r { text-align:right; }
+  .scroll { overflow:auto; max-height:320px; }
+  .grid2 { display:grid; grid-template-columns:1fr; gap:16px; }
+  @media (min-width: 1100px) { .grid2 { grid-template-columns:1fr 1fr; } }
+  .tag { display:inline-block; padding:1px 6px; border-radius:4px; font-size:12px; background:var(--line); }
+  .tag.buy { background:#1e3a8a; } .tag.sell { background:#7f1d1d; } .tag.blocked, .tag.skipped { background:#5b4a1e; }
+  footer { color:var(--muted); font-size:12px; padding:0 20px 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Paper Trading Dashboard</h1>
+  <span class="muted" id="meta">loading…</span>
+  <span class="muted" id="updated"></span>
+</header>
+<main>
+  <div id="halt" class="banner" hidden></div>
+  <div class="tiles" id="tiles"></div>
+  <div class="panel"><h2>Price, EMAs and fills</h2><div id="price"></div></div>
+  <div class="panel"><h2>Equity curve</h2><div id="equity"></div></div>
+  <div class="grid2">
+    <div class="panel"><h2>Closed trades</h2><div class="scroll"><table id="trades"></table></div></div>
+    <div class="panel"><h2>Recent decisions</h2><div class="scroll"><table id="decisions"></table></div></div>
+  </div>
+</main>
+<footer>Charts by <a href="https://www.tradingview.com/" style="color:var(--muted)">TradingView Lightweight Charts™</a>. Paper trading only. Not financial advice.</footer>
+<script>
+const fmt = (n, d=2) => (n === null || n === undefined || Number.isNaN(n)) ? '–' : Number(n).toLocaleString(undefined, {maximumFractionDigits:d, minimumFractionDigits:d});
+const pct = n => (n === null || n === undefined) ? '–' : (n >= 0 ? '+' : '') + fmt(n) + '%';
+const cls = n => n > 0 ? 'pos' : n < 0 ? 'neg' : '';
+const chartOpts = {
+  layout: { background: { color: '#171a21' }, textColor: '#c9cfdb' },
+  grid: { vertLines: { color: '#232833' }, horzLines: { color: '#232833' } },
+  rightPriceScale: { borderColor: '#262b36' }, timeScale: { borderColor: '#262b36', timeVisible: true },
+  crosshair: { mode: 0 }, autoSize: true,
+};
+let priceChart, candles, emaSeries = {}, equityChart, equitySeries, markersApi;
+
+function ensureCharts() {
+  if (priceChart) return;
+  priceChart = LightweightCharts.createChart(document.getElementById('price'), chartOpts);
+  candles = priceChart.addSeries(LightweightCharts.CandlestickSeries, {
+    upColor:'#26a69a', downColor:'#ef5350', borderVisible:false, wickUpColor:'#26a69a', wickDownColor:'#ef5350' });
+  const colors = { ema_fast:'#42a5f5', ema_slow:'#ffb74d', ema_trend:'#ab47bc' };
+  for (const k of Object.keys(colors))
+    emaSeries[k] = priceChart.addSeries(LightweightCharts.LineSeries, { color: colors[k], lineWidth: 1, priceLineVisible:false, lastValueVisible:false });
+  markersApi = LightweightCharts.createSeriesMarkers(candles, []);
+  equityChart = LightweightCharts.createChart(document.getElementById('equity'), chartOpts);
+  equitySeries = equityChart.addSeries(LightweightCharts.BaselineSeries, {
+    topLineColor:'#26a69a', topFillColor1:'rgba(38,166,154,0.35)', topFillColor2:'rgba(38,166,154,0.02)',
+    bottomLineColor:'#ef5350', bottomFillColor1:'rgba(239,83,80,0.02)', bottomFillColor2:'rgba(239,83,80,0.35)', lineWidth:2 });
+  priceChart.timeScale().subscribeVisibleLogicalRangeChange(r => r && equityChart.timeScale().setVisibleLogicalRange(r));
+}
+
+function tile(k, v, c='') { return `<div class="tile"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`; }
+
+function render(d) {
+  ensureCharts();
+  const m = d.meta, a = d.account, s = d.stats || {};
+  document.getElementById('title').textContent = `${m.symbol} · ${m.timeframe} · ${m.exchange}` + (m.execution === 'live' ? ' · LIVE' : ' · paper');
+  document.getElementById('meta').textContent = `review: ${m.review}${m.review !== 'off' ? ' (' + m.model + ')' : ''} · fee ${(m.fee_rate*100).toFixed(2)}% · sell tax ${(m.tax_sell_rate*100).toFixed(2)}%`;
+  document.getElementById('updated').textContent = `updated ${m.generated_at.replace('T',' ').slice(0,19)} UTC`;
+  const halt = document.getElementById('halt');
+  halt.hidden = !a.halted; halt.textContent = a.halted ? 'TRADING HALTED: ' + a.halted : '';
+
+  const ret = (a.equity / a.initial_cash - 1) * 100;
+  let html = tile('Equity', fmt(a.equity), cls(ret)) + tile('Return', pct(ret), cls(ret)) + tile('Cash', fmt(a.cash));
+  if (a.position) html += tile('Open position', `${a.position.qty} @ ${fmt(a.position.entry_price,0)}`, cls(a.position.unrealized_pct))
+                        + tile('Unrealized', pct(a.position.unrealized_pct), cls(a.position.unrealized_pct))
+                        + tile('Stop', fmt(a.position.stop_price,0));
+  else html += tile('Open position', 'none');
+  if (s.buy_hold_return_pct !== undefined) html += tile('Buy & hold', pct(s.buy_hold_return_pct), cls(s.buy_hold_return_pct));
+  if (s.max_drawdown_pct !== undefined) html += tile('Max drawdown', '-' + fmt(s.max_drawdown_pct) + '%', 'neg');
+  if (s.sharpe !== undefined) html += tile('Sharpe', fmt(s.sharpe));
+  html += tile('Trades', (s.trades ?? d.closed_trades.length) + (s.win_rate_pct !== undefined ? ` · ${fmt(s.win_rate_pct,0)}% win` : ''));
+  html += tile('Fees + tax paid', fmt(a.fees_paid + a.tax_paid));
+  document.getElementById('tiles').innerHTML = html;
+
+  candles.setData(d.candles);
+  for (const k in emaSeries) emaSeries[k].setData(d.lines[k] || []);
+  markersApi.setMarkers(d.markers);
+  equitySeries.setData(d.equity);
+  if (d.equity.length) equitySeries.applyOptions({ baseValue: { type:'price', price: a.initial_cash } });
+  priceChart.timeScale().fitContent();
+
+  const tt = document.getElementById('trades');
+  tt.innerHTML = '<tr><th>Entry</th><th>Exit</th><th class="r">Entry px</th><th class="r">Exit px</th><th class="r">P&L</th><th class="r">%</th><th class="r">Bars</th><th>Reason</th></tr>' +
+    d.closed_trades.map(t => `<tr><td>${t.entry_ts.slice(0,16).replace('T',' ')}</td><td>${t.exit_ts.slice(0,16).replace('T',' ')}</td>
+      <td class="r">${fmt(t.entry_price,0)}</td><td class="r">${fmt(t.exit_price,0)}</td><td class="r ${cls(t.pnl)}">${fmt(t.pnl)}</td>
+      <td class="r ${cls(t.pnl)}">${pct(t.pnl_pct)}</td><td class="r">${t.bars_held}</td><td>${t.exit_reason}</td></tr>`).join('') ||
+    '<tr><td colspan="8" class="muted">no closed trades yet</td></tr>';
+
+  const dt = document.getElementById('decisions');
+  dt.innerHTML = '<tr><th>Time</th><th>Action</th><th>Reason</th><th class="r">Equity</th><th>Claude</th></tr>' +
+    d.recent_decisions.map(x => `<tr>
+      <td>${x.ts.slice(0,16).replace('T',' ')}</td><td><span class="tag ${x.action}">${x.action}</span></td>
+      <td style="white-space:normal">${x.reason}</td><td class="r">${fmt(x.equity)}</td>
+      <td style="white-space:normal">${x.review ? `<b>${x.review.decision}</b> ×${x.review.size_multiplier} · ${x.review.reasoning}` : ''}</td></tr>`).join('') ||
+    '<tr><td colspan="5" class="muted">no decisions yet</td></tr>';
+}
+
+async function load() {
+  try {
+    const r = await fetch('data/dashboard.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+    render(await r.json());
+  } catch (e) {
+    document.getElementById('meta').textContent = 'no data yet: run `python -m claudetrader backtest` or `paper` (' + e.message + ')';
+  }
+}
+load();
+setInterval(load, 60_000);
+</script>
+</body>
+</html>
