@@ -7,6 +7,9 @@ venv/
 data/*.csv
 data/*.json
 data/*.jsonl
+data/*.log
+data/STOP
+data/live/
 !data/.gitkeep
 *.egg-info/
 build/
