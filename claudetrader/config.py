@@ -67,6 +67,19 @@ class Config:
     claude_review: str = "off"  # off | advisory | required
     claude_model: str = "claude-opus-5-5"
 
+    # execution: paper (default) or live. Live also needs LIVE_CONFIRM and API keys.
+    execution: str = "paper"
+    live_confirm: str = ""
+    api_key: str = ""
+    api_secret: str = ""
+    api_password: str = ""
+    sandbox: bool = False            # Binance spot testnet (testnet.binance.vision)
+    max_order_notional: float = 100.0  # quote currency per order
+    max_daily_orders: int = 10
+    exchange_stop: bool = False      # keep a stop-limit sell on the exchange (Binance/Tokocrypto)
+    telegram_token: str = ""
+    telegram_chat_id: str = ""
+
     data_dir: Path = field(default_factory=lambda: Path("data"))
 
     def __post_init__(self) -> None:
@@ -79,7 +92,17 @@ class Config:
             raise ValueError("RISK_PER_TRADE must be in (0, 0.1]")
         if not 0 < self.max_position_pct <= 1:
             raise ValueError("MAX_POSITION_PCT must be in (0, 1]")
+        if self.execution not in {"paper", "live"}:
+            raise ValueError("EXECUTION must be paper|live")
         self.data_dir = Path(self.data_dir)
+
+    @property
+    def is_live(self) -> bool:
+        return self.execution == "live"
+
+    @property
+    def stop_file(self) -> Path:
+        return self.data_dir / "STOP"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -108,7 +131,19 @@ class Config:
             atr_trail_mult=_env_float("ATR_TRAIL_MULT", 3.0),
             claude_review=_env("CLAUDE_REVIEW", "off").lower(),
             claude_model=_env("CLAUDE_MODEL", "claude-opus-5-5"),
-            data_dir=Path(_env("DATA_DIR", "data")),
+            execution=_env("EXECUTION", "paper").lower(),
+            live_confirm=_env("LIVE_CONFIRM", ""),
+            api_key=_env("EXCHANGE_API_KEY", ""),
+            api_secret=_env("EXCHANGE_API_SECRET", ""),
+            api_password=_env("EXCHANGE_API_PASSWORD", ""),
+            sandbox=_env("EXCHANGE_SANDBOX", "0") in {"1", "true", "yes"},
+            max_order_notional=_env_float("MAX_ORDER_NOTIONAL", 100.0),
+            max_daily_orders=_env_int("MAX_DAILY_ORDERS", 10),
+            exchange_stop=_env("EXCHANGE_STOP", "0") in {"1", "true", "yes"},
+            telegram_token=_env("TELEGRAM_BOT_TOKEN", ""),
+            telegram_chat_id=_env("TELEGRAM_CHAT_ID", ""),
+            # live keeps its own state/journal/dashboard so a paper run can never be mistaken for real money
+            data_dir=Path(_env("DATA_DIR", "data/live" if _env("EXECUTION", "paper").lower() == "live" else "data")),
         )
 
     @property

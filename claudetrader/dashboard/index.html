@@ -85,7 +85,7 @@ function tile(k, v, c='') { return `<div class="tile"><div class="k">${k}</div><
 function render(d) {
   ensureCharts();
   const m = d.meta, a = d.account, s = d.stats || {};
-  document.getElementById('title').textContent = `${m.symbol} · ${m.timeframe} · ${m.exchange}`;
+  document.getElementById('title').textContent = `${m.symbol} · ${m.timeframe} · ${m.exchange}` + (m.execution === 'live' ? ' · LIVE' : ' · paper');
   document.getElementById('meta').textContent = `review: ${m.review}${m.review !== 'off' ? ' (' + m.model + ')' : ''} · fee ${(m.fee_rate*100).toFixed(2)}% · sell tax ${(m.tax_sell_rate*100).toFixed(2)}%`;
   document.getElementById('updated').textContent = `updated ${m.generated_at.replace('T',' ').slice(0,19)} UTC`;
   const halt = document.getElementById('halt');

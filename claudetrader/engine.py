@@ -38,10 +38,17 @@ class EngineState:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "EngineState":
+    def from_dict(cls, d: dict, broker_factory=None) -> "EngineState":
+        """broker_factory(dict) builds the broker; defaults to PaperBroker. Live state needs a LiveBroker."""
         pos = OpenPosition(**d["position"]) if d.get("position") else None
-        return cls(PaperBroker.from_dict(d["broker"]), RiskState.from_dict(d["risk"]), pos,
-                   d.get("last_ts"), d.get("bars_seen", 0))
+        bd = d["broker"]
+        if broker_factory is None:
+            if bd.get("kind") == "live":
+                raise ValueError("this state file belongs to a live run; load it with EXECUTION=live")
+            broker = PaperBroker.from_dict({k: v for k, v in bd.items() if k != "kind"})
+        else:
+            broker = broker_factory(bd)
+        return cls(broker, RiskState.from_dict(d["risk"]), pos, d.get("last_ts"), d.get("bars_seen", 0))
 
 
 @dataclass
@@ -57,12 +64,14 @@ class StepResult:
 
 class Engine:
     def __init__(self, cfg: Config, state: EngineState | None = None,
-                 reviewer: ClaudeReviewer | None = None, journal: Journal | None = None):
+                 reviewer: ClaudeReviewer | None = None, journal: Journal | None = None, broker=None):
         self.cfg = cfg
         self.strategy = EmaRsiTrendStrategy(cfg)
         if state is None:
-            broker = PaperBroker(cfg.initial_cash, cfg.fee_rate, cfg.tax_sell_rate, cfg.slippage_bps)
-            state = EngineState(broker, RiskState(peak_equity=cfg.initial_cash), None)
+            if broker is None:
+                broker = PaperBroker(cfg.initial_cash, cfg.fee_rate, cfg.tax_sell_rate, cfg.slippage_bps)
+            start_equity = broker.equity(0.0) if broker.equity(0.0) > 0 else cfg.initial_cash
+            state = EngineState(broker, RiskState(peak_equity=start_equity), None)
         self.state = state
         self.risk = RiskManager(cfg, state.risk)
         self.reviewer = reviewer
@@ -82,8 +91,17 @@ class Engine:
         bar = self.state.bars_seen
         st = self.state
 
+        # live only: a position may have been closed by an exchange-side stop or by hand since last bar
+        if st.position is not None and hasattr(self.broker, "sync"):
+            closed_outside = self.broker.sync(ts_str, bar)
+            if closed_outside is not None:
+                self.risk.on_trade_closed(closed_outside.pnl, bar)
+                st.position = None
+
         if st.position is not None:
             st.position = self.strategy.update_trailing_stop(df, i, st.position)
+            if hasattr(self.broker, "update_stop"):
+                self.broker.update_stop(st.position.stop_price, close)
 
         equity = self.broker.equity(close)
         self.risk.on_bar(ts, equity)
@@ -119,6 +137,8 @@ class Engine:
                     if fill:
                         st.position = OpenPosition(fill.price, fill.qty, sig.stop_price, bar, close)
                         result.action, result.fill = "buy", fill.__dict__
+                        if hasattr(self.broker, "update_stop"):
+                            self.broker.update_stop(sig.stop_price, close)
 
         equity = self.broker.equity(close)
         result.equity = equity

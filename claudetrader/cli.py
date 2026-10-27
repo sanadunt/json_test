@@ -47,9 +47,49 @@ def cmd_backtest(cfg: Config, args) -> None:
 
 
 def cmd_paper(cfg: Config, args) -> None:
-    from .paper import run_paper
+    from .runner import run_loop
 
-    run_paper(cfg, once=args.once)
+    if cfg.is_live:
+        sys.exit("EXECUTION=live is set; use `python -m claudetrader live` for real orders")
+    run_loop(cfg, once=args.once)
+
+
+def cmd_live(cfg: Config, args) -> None:
+    from .runner import run_loop
+
+    if not cfg.is_live:
+        sys.exit("set EXECUTION=live (plus LIVE_CONFIRM and API keys) to run real orders")
+    run_loop(cfg, once=args.once)
+
+
+def cmd_balance(cfg: Config, args) -> None:
+    """Connect with the configured API key, print balances and the pair's order limits. No orders."""
+    from .live_broker import make_live_exchange
+
+    if not cfg.api_key or not cfg.api_secret:
+        sys.exit("EXCHANGE_API_KEY and EXCHANGE_API_SECRET are required")
+    ex = make_live_exchange(cfg.exchange, cfg.api_key, cfg.api_secret, cfg.api_password or None, cfg.sandbox)
+    ex.load_markets()
+    m = ex.markets.get(cfg.symbol)
+    if not m:
+        sys.exit(f"{cfg.symbol} is not listed on {cfg.exchange}")
+    bal = ex.fetch_balance()
+    base, quote = cfg.symbol.split("/")
+    print(f"{cfg.exchange}{' (sandbox)' if cfg.sandbox else ''} {cfg.symbol}")
+    print(f"  {quote}: free={bal['free'].get(quote, 0)} total={bal['total'].get(quote, 0)}")
+    print(f"  {base}:  free={bal['free'].get(base, 0)} total={bal['total'].get(base, 0)}")
+    lim = m.get("limits") or {}
+    print(f"  min amount={lim.get('amount', {}).get('min')} min cost={lim.get('cost', {}).get('min')} "
+          f"amount precision={m.get('precision', {}).get('amount')}")
+    print(f"  stop orders on exchange: {'yes' if ex.has.get('createStopLimitOrder') else 'no (software stop)'}")
+    print(f"  withdrawal permission on this key should be OFF; check it on the exchange.")
+
+
+def cmd_panic(cfg: Config, args) -> None:
+    """Create the STOP file. The running loop closes any position and halts on its next tick."""
+    cfg.stop_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg.stop_file.write_text("created by `claudetrader panic`\n")
+    print(f"STOP file written: {cfg.stop_file}. Delete it to allow the bot to start again.")
 
 
 def cmd_serve(cfg: Config, args) -> None:
@@ -91,6 +131,16 @@ def main(argv: list[str] | None = None) -> None:
     s = sub.add_parser("paper", help="paper-trade on live data (loops until Ctrl-C)")
     s.add_argument("--once", action="store_true", help="process new candles once and exit (for cron)")
     s.set_defaults(fn=cmd_paper)
+
+    s = sub.add_parser("live", help="REAL orders on the exchange (needs EXECUTION=live, LIVE_CONFIRM, API keys)")
+    s.add_argument("--once", action="store_true", help="process new candles once and exit (for cron)")
+    s.set_defaults(fn=cmd_live)
+
+    s = sub.add_parser("balance", help="check API key: print balances and order limits, place nothing")
+    s.set_defaults(fn=cmd_balance)
+
+    s = sub.add_parser("panic", help="write the STOP file: the loop closes the position and halts")
+    s.set_defaults(fn=cmd_panic)
 
     s = sub.add_parser("serve", help="serve the dashboard on localhost")
     s.add_argument("--port", type=int, default=8000)

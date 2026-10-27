@@ -53,6 +53,7 @@ def build_payload(cfg: Config, engine, df: pd.DataFrame, stats: dict | None = No
     recent = sorted(acted + holds, key=lambda e: e["ts"], reverse=True)
     return {
         "meta": {"exchange": cfg.exchange, "symbol": cfg.symbol, "timeframe": cfg.timeframe,
+                 "execution": cfg.execution,
                  "review": cfg.claude_review, "model": cfg.claude_model,
                  "fee_rate": cfg.fee_rate, "tax_sell_rate": cfg.tax_sell_rate,
                  "generated_at": pd.Timestamp.utcnow().isoformat(timespec="seconds")},

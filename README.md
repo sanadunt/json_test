@@ -2,7 +2,7 @@
 
 Bot paper-trading kripto yang jujur: strategi berbasis aturan, batas risiko keras di kode, Claude sebagai *reviewer* opsional (hanya boleh memveto atau mengecilkan posisi), dan dashboard ala TradingView memakai [Lightweight Charts](https://www.tradingview.com/lightweight-charts/) yang open source.
 
-Dibangun untuk belajar dan menguji sebelum pakai uang asli. **Tidak ada eksekusi order sungguhan di kode ini.**
+Dibangun untuk belajar dan menguji sebelum pakai uang asli. Eksekusi order sungguhan ada, tapi **nonaktif secara default** dan hanya bisa menyala kalau kamu mengetik frasa konfirmasi, memasang API key, dan mengisi batas order. Lihat bagian "Mode live".
 
 > **Disclaimer.** Ini bukan nasihat keuangan. Riset populasi menunjukkan 74–97% trader ritel rugi (Chague dkk. 2020, Barber & Odean, ESMA). Strategi contoh di sini *rugi* di beberapa periode dan untung di periode lain, lihat tabel di bawah. Gunakan untuk belajar cara kerja sistem, bukan sebagai sumber penghasilan.
 
@@ -44,8 +44,10 @@ python -m claudetrader backtest --bars 3000 --trades  # jalankan strategi, cetak
 python -m claudetrader serve                          # buka http://127.0.0.1:8000
 python -m claudetrader paper                          # paper trading live (Ctrl-C untuk berhenti)
 python -m claudetrader paper --once                   # satu putaran, cocok untuk cron
-python -m pytest                                      # 28 tes
+python -m pytest                                      # 43 tes
 ```
+
+Panduan menjalankan di laptop atau VPS (systemd, cron, SSH tunnel): [docs/DEPLOY.md](docs/DEPLOY.md).
 
 Semua konfigurasi lewat environment variable atau file `.env`. Lihat `.env.example` untuk daftar lengkap (exchange, pair, timeframe, fee, pajak, batas risiko, parameter indikator, mode reviewer).
 
@@ -82,12 +84,53 @@ Tiga pelajaran yang langsung terlihat dari angka ini:
 
 Jalankan sendiri dengan parameter lain: `TIMEFRAME=4h TAX_SELL_RATE=0.0021 python -m claudetrader backtest --bars 3000`.
 
+## Mode live (uang asli)
+
+Pipeline strategi, risk, dan reviewer tidak berubah. Yang berbeda hanya siapa yang mengeksekusi: `LiveBroker` (`live_broker.py`) mengirim market order lewat ccxt, membaca harga dan fee dari fill sungguhan, dan menjadikan saldo exchange sebagai sumber kebenaran untuk kas.
+
+Exchange yang sudah diperhitungkan:
+
+| Exchange | Pasar | Pajak jual default | Stop di sisi exchange | Testnet |
+|---|---|---|---|---|
+| Indodax | lokal, izin OJK, pasangan IDR | 0,21% (dipotong exchange) | tidak ada, stop dievaluasi bot per candle | tidak ada |
+| Tokocrypto | lokal, izin OJK, pasangan USDT | 0,21% (dipotong exchange) | ada (`EXCHANGE_STOP=1`) | tidak ada |
+| Binance | internasional | 1% (kamu setor sendiri) | ada (`EXCHANGE_STOP=1`) | ada (`EXCHANGE_SANDBOX=1`) |
+
+Pengaman yang berjalan di kode, bukan di prompt:
+
+1. `EXECUTION=live` **dan** `LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY` **dan** API key harus ada. Kurang satu, bot menolak start.
+2. `MAX_ORDER_NOTIONAL` membatasi nilai tiap order, `MAX_DAILY_ORDERS` membatasi jumlah order per hari, `MAX_POSITION_PCT` di atas 50% ditolak di mode live.
+3. Saat start, saldo exchange direkonsiliasi dengan state lokal. Kalau beda, bot menolak jalan sampai kamu membereskannya manual.
+4. Tiap candle, bot mengecek apakah posisi ditutup di luar bot (stop exchange terpicu, jual manual) dan mencatatnya.
+5. File `data/live/STOP` (dibuat lewat `python -m claudetrader panic`) membuat loop menutup posisi di harga pasar lalu berhenti.
+6. Notifikasi Telegram opsional untuk tiap order dan tiap error.
+7. State, jurnal, dan dashboard live disimpan di `data/live/`, terpisah dari paper, dan file state paper tidak bisa dimuat sebagai live atau sebaliknya.
+
+Urutan yang disarankan sebelum uang asli:
+
+```bash
+# 1. cek key tanpa order apa pun (pakai key dengan izin trade saja, withdrawal OFF, IP whitelist)
+EXCHANGE=binance EXCHANGE_SANDBOX=1 EXCHANGE_API_KEY=... EXCHANGE_API_SECRET=... python -m claudetrader balance
+
+# 2. testnet Binance dengan alur API yang sama persis (saldo palsu)
+EXECUTION=live EXCHANGE_SANDBOX=1 LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY MAX_ORDER_NOTIONAL=50 python -m claudetrader live
+
+# 3. uang asli, nominal terkecil yang diizinkan pair-nya, setelah paper dan testnet beres
+EXECUTION=live LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY MAX_ORDER_NOTIONAL=20 MAX_DAILY_ORDERS=4 python -m claudetrader live
+
+# tombol darurat dari terminal lain
+EXECUTION=live python -m claudetrader panic
+```
+
+Indodax dan Tokocrypto tidak punya testnet, jadi langkah 2 dilewati dan langkah 3 dimulai dengan nominal minimum pair (cek lewat `balance`).
+
 ## Batas yang disengaja
 
 - **Long-only, spot, satu pair, satu posisi.** Cukup untuk belajar pipeline. Short dan leverage tidak ada.
 - **Fill di harga close candle + slippage.** Tidak ada simulasi order book.
 - **Reviewer hanya dipanggil saat sinyal BUY.** Exit sepenuhnya mekanis (stop, trailing stop, cross down) supaya LLM tidak bisa "berharap" posisi rugi berbalik.
-- **Tidak ada koneksi ke akun exchange.** Kalau suatu saat mau live, tulis adapter broker baru dengan antarmuka yang sama seperti `PaperBroker`, dan jangan beri bot akses withdrawal.
+- **Market order saja.** Tidak ada limit order pasif, tidak ada eksekusi parsial yang canggih. Untuk nominal kecil di pair likuid seperti BTC ini cukup.
+- **Jangan pernah beri API key izin withdrawal.** Kode ini tidak membutuhkannya, dan kalau VPS atau key bocor, uang tetap tidak bisa ditarik.
 
 ## Jalur yang disarankan
 
